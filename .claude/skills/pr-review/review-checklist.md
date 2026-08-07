@@ -38,6 +38,7 @@ When a PR introduces new API patterns, carefully evaluate the broader implicatio
 - [ ] **No backward-compatibility hacks** - Unused code is deleted completely, not renamed with underscores or marked with "removed" comments
 - [ ] **Appropriate complexity** - Solutions are as simple as possible for the current requirements
 - [ ] **Documentation shows correct patterns only** - Docs and markdown files should show the right way to do things directly, not anti-patterns followed by corrections. Code examples must have correct indentation, names, and syntax
+- [ ] **No suppressed asserts** - PR adds `# noqa: S101` to silence ruff's "Use of assert detected" instead of rewriting the assert. Plain `assert` is stripped by `python -O`, so a suppressed assert is a check that silently does nothing in an optimized run. Require `if not cond: raise AssertionError(msg)`, preserving the original message when there is one. Ruff's own lint output suggests the noqa, so this slips in often
 
 ### Initialization and Module Design
 
