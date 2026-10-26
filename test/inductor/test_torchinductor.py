@@ -20772,6 +20772,20 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         table = torch.rand(1, 8, 64, 80, device=self.device) * 4
         self.common(fn, (x, y, table), check_lowp=False)
 
+    def test_nested_compile_region_multiple_invocations(self):
+        # Each call is inlined in its own C++ `{ ... }` under cpp_wrapper.
+        # The second copy must redeclare the region's buffers; skipping that
+        # allocation because the name is already in self.allocated fails with
+        # `'repeated_subgraph0_buf0' was not declared in this scope`.
+        @torch.compiler.nested_compile_region
+        def gn(x):
+            return torch.sin(x) + 1
+
+        def fn(x):
+            return torch.cos(gn(x * 2)) + gn(x * 3)
+
+        self.common(fn, (torch.randn(8, 8, device=self.device),))
+
     # end of class CommonTemplate - add new tests here
 
 

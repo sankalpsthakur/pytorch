@@ -268,6 +268,10 @@ if RUN_CPU:
             "test_mkl_linear", "", test_cpu_repro.CPUReproTests(), condition=TEST_MKL
         ),
         BaseTest("test_mm_views"),
+        BaseTest(
+            "test_nested_compile_region_multiple_invocations",
+            code_string_count={"// subgraph: ": 2},
+        ),
         BaseTest("test_multihead_attention", "cpu", test_cpu_repro.CPUReproTests()),
         BaseTest(
             "test_multi_threading",

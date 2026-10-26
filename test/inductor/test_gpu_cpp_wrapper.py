@@ -1371,6 +1371,7 @@ if RUN_GPU:
         BaseTest("test_linear1"),
         BaseTest("test_linear2"),
         BaseTest("test_mm_views"),
+        BaseTest("test_nested_compile_region_multiple_invocations"),
         BaseTest("test_multi_device"),
         BaseTest("test_multi_threading"),
         BaseTest("test_pow3"),
