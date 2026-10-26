@@ -1149,6 +1149,51 @@ class TestFxGraphCache(TestCase):
             torch.set_default_dtype(old_dtype)
             FxGraphCache.clear()
 
+    @config.patch({"fx_graph_cache": True, "fx_graph_remote_cache": False})
+    @functorch_config.patch({"enable_autograd_cache": False, "donated_buffer": True})
+    def test_donated_buffer_retain_graph_does_not_reuse_cached_backward(self):
+        # A plain .backward() compiles a donated-buffer backward. After
+        # dynamo.reset(), retain_graph=True clears bw_donated_idxs before
+        # compiling. Those indices must be in the FX graph cache key or
+        # the donated kernel is reused and the second backward is wrong.
+        class Square(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                return x.square()
+
+            @staticmethod
+            def backward(ctx, g):
+                (x,) = ctx.saved_tensors
+                return 2 * g * x
+
+        def f(a, b):
+            return Square.apply(a + b)
+
+        def two_retain_grads(fn):
+            a = torch.ones(1, requires_grad=True)
+            b = torch.ones(1)
+            out = fn(a, b)
+            grads = []
+            for _ in range(2):
+                a.grad = None
+                out.backward(retain_graph=True)
+                grads.append(a.grad.detach().clone())
+            return grads
+
+        eager_grads = two_retain_grads(f)
+
+        with fresh_cache():
+            a = torch.ones(1, requires_grad=True)
+            b = torch.ones(1)
+            torch.compile(f)(a, b).backward()
+            torch._dynamo.reset()
+            compiled_grads = two_retain_grads(torch.compile(f))
+
+        self.assertEqual(compiled_grads, eager_grads)
+        for grad in compiled_grads:
+            self.assertEqual(grad, torch.tensor([4.0]))
+
     @requires_triton()
     @config.patch({"fx_graph_remote_cache": True})
     @parametrize("device", (GPU_TYPE, "cpu"))
@@ -3833,6 +3878,31 @@ class TestFxGraphCacheHashing(TestCase):
         result = graph.call_function(torch.empty, ((4,),), kwargs)
         graph.output(result)
         return torch.fx.GraphModule({}, graph)
+
+    def test_donated_buffer_state_affects_cache_key(self):
+        def fn(x):
+            return x + 1
+
+        gm = torch.fx.symbolic_trace(fn)
+        x = torch.ones(4)
+
+        def key_for_idxs(idxs):
+            ctx = torch._guards.TracingContext(None)
+            ctx.fw_metadata = types.SimpleNamespace(bw_donated_idxs=idxs)
+            with torch._guards.tracing(ctx):
+                return self._fx_graph_cache_key(gm, [x])
+
+        donated_key = key_for_idxs([1])
+        empty_key = key_for_idxs([])
+        none_key = key_for_idxs(None)
+        self.assertNotEqual(donated_key, empty_key)
+        self.assertEqual(empty_key, none_key)
+
+        with functorch_config.patch(donated_buffer=True):
+            enabled_key = self._fx_graph_cache_key(gm, [x])
+        with functorch_config.patch(donated_buffer=False):
+            disabled_key = self._fx_graph_cache_key(gm, [x])
+        self.assertNotEqual(enabled_key, disabled_key)
 
     def test_cpu_thread_count_affects_cache_key(self):
         def fn(x):

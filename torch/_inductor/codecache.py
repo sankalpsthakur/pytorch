@@ -107,6 +107,7 @@ from torch._inductor.utils import (
     clear_on_fresh_cache,
     determine_aoti_mmap_flags,
     fp32_matmul_precision_key,
+    get_donated_idxs,
     is_linux,
     is_windows,
     parallel_num_threads,
@@ -1782,6 +1783,13 @@ class FxGraphHashDetails:
         )
         # TODO: change to more holistic config rather than bundled_autograd_cache
         self.precompile_enabled = torch._functorch.config.bundled_autograd_cache
+        # GraphLowering turns TracingContext.fw_metadata.bw_donated_idxs into
+        # DonatedBuffers. Those indices and the functorch donated_buffer flag
+        # are not in the FX graph, so they must be part of the cache key: a
+        # donated backward must not be reused when retain_graph=True (idxs
+        # cleared) or when donation is disabled. See #201970.
+        self.bw_donated_idxs = tuple(get_donated_idxs() or ())
+        self.donated_buffer = torch._functorch.config.donated_buffer
         self.post_grad_custom_post_pass = self._get_custom_pass_detail(
             config.post_grad_custom_post_pass
         )
