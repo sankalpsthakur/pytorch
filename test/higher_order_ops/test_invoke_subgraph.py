@@ -55,7 +55,11 @@ from torch.testing._internal.common_utils import (
     TEST_WITH_CROSSREF,
     TestCase,
 )
-from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
+from torch.testing._internal.inductor_utils import (
+    GPU_TYPE,
+    has_cpp_wrapper_for_device,
+    HAS_GPU,
+)
 from torch.testing._internal.triton_utils import requires_cuda_and_triton, requires_gpu
 
 
@@ -368,6 +372,27 @@ class TestInvokeSubgraphCompile(TestCase):
         self.assertEqual(ref, res)
         self.assertEqual(x.grad, x_clone.grad)
         self.assertEqual(y.grad, y_clone.grad)
+
+    @unittest.skipIf(
+        not has_cpp_wrapper_for_device("cpu"),
+        "cpp_wrapper is not available for cpu",
+    )
+    @inductor_config.patch("cpp_wrapper", True)
+    def test_cpp_wrapper_nested_compile_region_multiple_invocations(self):
+        # Same region inlined twice: each copy is a C++ block, so the second
+        # invocation must redeclare inner buffers that went out of scope.
+        @nested_compile_region
+        def gn(x):
+            return torch.sin(x) + 1
+
+        def fn(x):
+            return torch.cos(gn(x * 2)) + gn(x * 3)
+
+        x = torch.randn(8, 8)
+        with torch.no_grad():
+            ref = fn(x)
+            res = torch.compile(fn, backend="inductor", fullgraph=True)(x)
+        self.assertEqual(ref, res)
 
     @torch._functorch.config.patch("donated_buffer", True)
     @requires_cuda_and_triton

@@ -74,6 +74,33 @@ if TYPE_CHECKING:
 
 
 @dataclasses.dataclass
+class EnterInvokeSubgraphScopeLine(WrapperLine):
+    """Open the C++ `{` around an inlined nested region.
+
+    AllocateLine emits size/stride int arrays at generate() time from a
+    wrapper-lifetime cache. Push that cache here so a later copy of the same
+    region redeclares arrays that died at this block's closing brace.
+    """
+
+    wrapper: PythonWrapperCodegen
+
+    def codegen(self, code: IndentedBuffer) -> None:
+        self.wrapper.push_kernel_profile_scope_state()
+        code.writeline("{")
+
+
+@dataclasses.dataclass
+class ExitInvokeSubgraphScopeLine(WrapperLine):
+    """Close the `{` that EnterInvokeSubgraphScopeLine opened."""
+
+    wrapper: PythonWrapperCodegen
+
+    def codegen(self, code: IndentedBuffer) -> None:
+        self.wrapper.pop_kernel_profile_scope_state()
+        code.writeline("}")
+
+
+@dataclasses.dataclass
 class DualWrapperCodeLine(WrapperLine):
     jit_code: IndentedBuffer
     aot_code: AotOnlyBuffer
@@ -429,6 +456,15 @@ class CppWrapperCpu(PythonWrapperCodegen):
 
     @contextlib.contextmanager
     def _preserve_codegen_state(self, graphs):
+        """Restore scheduler-time memos after codegen into a C++ `{ ... }` block.
+
+        codegen_allocation records names in self.allocated for the whole wrapper.
+        An inlined nested region (and the dual-wrapper JIT visit into a discarded
+        buffer) must not leave those names allocated after the block, or a later
+        copy skips emitting AllocateLine and the C++ names a variable that died
+        at `}`. Generate-time memos such as the int-array cache are handled by
+        EnterInvokeSubgraphScopeLine instead.
+        """
         wrapper_state = (
             OrderedSet(self.allocated),
             OrderedSet(self.freed),
@@ -3001,12 +3037,18 @@ class CppWrapperCpu(PythonWrapperCodegen):
 
         # The region runs its own Scheduler, which re-emits per-device state such as
         # `<stream_t> stream0;`; unscoped that redefines the parent's declaration.
-        self.writeline("{")
-        with self._preserve_device_guard_state():
+        # The block is a real C++ scope: restore scheduler-time allocation memos
+        # so a later invocation emits AllocateLine again, and wrap the braces in
+        # scope lines so generate-time int-array declarations are emitted again too.
+        self.writeline(EnterInvokeSubgraphScopeLine(self))
+        with (
+            self._preserve_device_guard_state(),
+            self._preserve_codegen_state((invoke_subgraph.subgraph.graph,)),
+        ):
             self.writeline(EnterSubgraphLine(self, invoke_subgraph.subgraph.graph))
             self.codegen_subgraph(invoke_subgraph.subgraph, outer_inputs, outer_outputs)
             self.writeline(ExitSubgraphLine(self))
-        self.writeline("}")
+        self.writeline(ExitInvokeSubgraphScopeLine(self))
 
     def codegen_switch(self, node) -> None:
         """Emit ABI-compatible C++ for a higher-order cond/switch."""
